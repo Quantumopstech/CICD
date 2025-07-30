@@ -1,0 +1,65 @@
+name: CI/CD Pipeline - Maven + Docker + K8s
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  IMAGE_NAME: my-cicd-demo
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+  NEXUS_REPO_URL: ${{ secrets.NEXUS_REPO_URL }}
+  NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+  NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+  KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
+
+      - name: Build with Maven
+        run: mvn clean package -DskipTests
+
+      - name: Upload JAR to Nexus/JFrog
+        run: |
+          mvn deploy:deploy-file \
+            -Durl=$NEXUS_REPO_URL \
+            -DrepositoryId=nexus \
+            -Dfile=target/cicd-demo-1.0.0.jar \
+            -DgroupId=com.demo \
+            -DartifactId=cicd-demo \
+            -Dversion=1.0.0 \
+            -Dpackaging=jar \
+            -DgeneratePom=true \
+            -Dusername=$NEXUS_USERNAME \
+            -Dpassword=$NEXUS_PASSWORD
+
+      - name: Build Docker Image
+        run: docker build -t $REGISTRY/$IMAGE_NAME:${{ github.sha }} .
+
+      - name: Login to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Push Docker Image
+        run: docker push $REGISTRY/$IMAGE_NAME:${{ github.sha }}
+
+      - name: Deploy to Kubernetes
+        uses: azure/k8s-deploy@v4
+        with:
+          manifests: |
+            k8s/deployment.yaml
+            k8s/service.yaml
+          images: |
+            $REGISTRY/$IMAGE_NAME:${{ github.sha }}
+          namespace: default
+          kubeconfig: $KUBE_CONFIG
